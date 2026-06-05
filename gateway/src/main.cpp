@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <RadioLib.h>
+#include "display/display.h"
 
 /*
 Branchement SX1262 (intégré Heltec V3 - interne)
@@ -16,15 +17,15 @@ Branchement SX1262 (intégré Heltec V3 - interne)
 │ BUSY   │ 13     │
 └────────┴────────┘
 
-RSSI - Plus c'est proche de 0, meilleur c'est 
+RSSI - Plus c'est proche de 0, meilleur c'est
 SNR - rapport signal/bruit, en dB
-┌────────────┬────────────┬──────────┬────────────┐                                                                                                                                                       
-│ Indicateur │    Bon     │  Limite  │    Mort    │                                                                                                                                                       
-├────────────┼────────────┼──────────┼────────────┤                                                                                                                                                       
+┌────────────┬────────────┬──────────┬────────────┐
+│ Indicateur │    Bon     │  Limite  │    Mort    │
+├────────────┼────────────┼──────────┼────────────┤
 │ RSSI       │ > -100 dBm │ -110 dBm │ < -120 dBm │
-├────────────┼────────────┼──────────┼────────────┤                                                                                                                                                       
+├────────────┼────────────┼──────────┼────────────┤
 │ SNR        │ > 0 dB     │ -10 dB   │ < -20 dB   │
-└────────────┴────────────┴──────────┴────────────┘ 
+└────────────┴────────────┴──────────┴────────────┘
 */
 
 // ─── SX1262 pins (Heltec WiFi LoRa 32 V3) ────────────────────────────────────
@@ -54,9 +55,10 @@ void IRAM_ATTR onReceive() {
     rxDone = true;
 }
 
-void decodePayload(uint8_t *buf, uint8_t len) {
+void decodeAndDisplay(uint8_t *buf, uint8_t len) {
     if (len < PAYLOAD_LEN) {
         Serial.printf("[RX] Payload trop court: %d bytes\n", len);
+        displayError("Payload trop court");
         return;
     }
 
@@ -66,27 +68,35 @@ void decodePayload(uint8_t *buf, uint8_t len) {
 
     float temp     = temp_raw / 100.0f;
     float pressure = (float)pres_raw;
+    float rssi     = radio.getRSSI();
+    float snr      = radio.getSNR();
 
     Serial.println("─────────────────────────────");
     Serial.printf("Device ID  : 0x%04X\n", device_id);
     Serial.printf("Température: %.2f °C\n", temp);
     Serial.printf("Pression   : %.0f hPa\n", pressure);
-    Serial.printf("RSSI       : %.1f dBm\n", radio.getRSSI());
-    Serial.printf("SNR        : %.1f dB\n",  radio.getSNR());
+    Serial.printf("RSSI       : %.1f dBm\n", rssi);
+    Serial.printf("SNR        : %.1f dB\n",  snr);
     Serial.println("─────────────────────────────");
+
+    displayPacket(device_id, temp, pressure, rssi, snr);
 }
 
 void setup() {
     Serial.begin(115200);
+
+    displayInit();
 
     SPI.begin(9, 11, 10, LORA_NSS);
     int state = radio.begin(LORA_FREQ, LORA_BW, LORA_SF, LORA_CR,
                             LORA_SYNC_WORD);
     if (state != RADIOLIB_ERR_NONE) {
         Serial.printf("[LoRa] Init failed: %d\n", state);
+        displayError("LoRa init failed");
         while (1);
     }
     Serial.println("[LoRa] Gateway ready — écoute sur 868 MHz");
+    displayStatus("Ecoute 868 MHz...");
 
     radio.setDio1Action(onReceive);
     radio.startReceive();
@@ -100,11 +110,13 @@ void loop() {
     int state = radio.readData(buf, PAYLOAD_LEN);
 
     if (state == RADIOLIB_ERR_NONE) {
-        decodePayload(buf, PAYLOAD_LEN);
+        decodeAndDisplay(buf, PAYLOAD_LEN);
     } else {
         Serial.printf("[LoRa] RX error: %d\n", state);
+        char err[20];
+        snprintf(err, sizeof(err), "RX error: %d", state);
+        displayError(err);
     }
 
-    // Relance l'écoute
     radio.startReceive();
 }
