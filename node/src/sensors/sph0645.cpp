@@ -1,12 +1,15 @@
 //
 // Created by Moolinex on 11/06/2026.
 //
-#include "sph0645.h"
+
+#include "sensors/sph0645.h"
 #include <driver/i2s.h>
 #include <Arduino.h>
 #include <math.h>
 
 #define I2S_PORT    I2S_NUM_0
+
+static int32_t _mic_buf[MIC_BUFFER_SIZE];
 
 bool micInit() {
     i2s_config_t cfg = {
@@ -16,8 +19,8 @@ bool micInit() {
         .channel_format       = MIC_CHANNEL_FORMAT,
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
         .intr_alloc_flags     = ESP_INTR_FLAG_LEVEL1,
-        .dma_buf_count        = 4,
-        .dma_buf_len          = MIC_BUFFER_SIZE,
+        .dma_buf_count        = 8,
+        .dma_buf_len          = 256,
         .use_apll             = false,
         .tx_desc_auto_clear   = false,
         .fixed_mclk           = 0
@@ -40,8 +43,9 @@ bool micInit() {
         return false;
     }
 
-    REG_SET_BIT(I2S_TIMING_REG(I2S_PORT), BIT(9));
-    REG_SET_BIT(I2S_CONF_REG(I2S_PORT),   I2S_RX_MSB_SHIFT);
+    // Flush du buffer de démarrage
+    size_t dummy;
+    i2s_read(I2S_PORT, _mic_buf, sizeof(_mic_buf), &dummy, 100 / portTICK_PERIOD_MS);
 
     Serial.println("[MIC] OK");
     return true;
@@ -54,15 +58,21 @@ size_t micRead(int32_t *buf, size_t samples) {
 }
 
 float micReadRMS(size_t samples) {
-    int32_t buf[samples];
-    size_t  n = micRead(buf, samples);
+    if (samples > MIC_BUFFER_SIZE) samples = MIC_BUFFER_SIZE;
+
+    // Vide le buffer DMA accumulé pendant le delay
+    size_t dummy;
+    i2s_read(I2S_PORT, _mic_buf, sizeof(_mic_buf), &dummy, 10 / portTICK_PERIOD_MS);
+    i2s_read(I2S_PORT, _mic_buf, sizeof(_mic_buf), &dummy, 10 / portTICK_PERIOD_MS);
+
+    // Lecture utile
+    size_t n = micRead(_mic_buf, samples);
     if (n == 0) return 0.0f;
 
     double sum = 0.0;
     for (size_t i = 0; i < n; i++) {
-        float sample = (float)(buf[i] >> 8) / (float)(1 << 23);
+        float sample = (float)(_mic_buf[i] >> 14) / (float)(1 << 17);
         sum += sample * sample;
     }
     return sqrtf((float)(sum / n));
 }
-

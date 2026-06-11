@@ -2,6 +2,7 @@
 #include <SPI.h>
 #include <Adafruit_BMP280.h>
 #include <RadioLib.h>
+#include "sensors/sph0645.h"
 
 /*
 Branchement BMP280 (HW-611)
@@ -33,6 +34,23 @@ Branchement SX1276 (intégré T-Beam)
 │ DIO0   │ 26     │
 │ DIO1   │ 33     │
 └────────┴────────┘
+
+Branchement SPH0645 (micro I2S)
+┌────────────┬────────────────────┐
+│  SPH0645   │       T-Beam       │
+├────────────┼────────────────────┤
+│ 3V         │ 3.3V               │
+├────────────┼────────────────────┤
+│ GND        │ GND                │
+├────────────┼────────────────────┤
+│ BCLK       │ GPIO 32            │
+├────────────┼────────────────────┤
+│ LRCL (WS)  │ GPIO 25            │
+├────────────┼────────────────────┤
+│ DOUT       │ GPIO 34            │
+├────────────┼────────────────────┤
+│ SEL        │ GND  ← canal LEFT  │
+└────────────┴────────────────────┘
 */
 
 // ─── SX1276 pins (T-Beam v1.1) ───────────────────────────────────────────────
@@ -56,7 +74,8 @@ Branchement SX1276 (intégré T-Beam)
 // byte 0-1 : device id      (uint16, big-endian)
 // byte 2-3 : temperature    (int16, °C × 100)
 // byte 4-5 : pressure       (uint16, hPa)
-// total: 6 bytes
+// byte 6-7 : mic RMS        (uint16, valeur × 10000)
+// total: 8 bytes
 
 SX1276 radio = new Module(LORA_NSS, LORA_DIO0, LORA_RST, LORA_DIO1);
 Adafruit_BMP280 bmp;
@@ -72,6 +91,12 @@ void setup() {
     }
     Serial.println("[BMP280] OK");
 
+    // I2S for SPH0645
+    if (!micInit()) {
+        Serial.println("[MIC] Init failed !");
+        while (1);
+    }
+
     // SX1276 SPI
     SPI.begin(5, 19, 27, LORA_NSS);
     int state = radio.begin(LORA_FREQ, LORA_BW, LORA_SF, LORA_CR,
@@ -83,9 +108,10 @@ void setup() {
     Serial.println("[LoRa] OK");
 }
 
-void buildPayload(uint8_t *buf, float temp, float pressure) {
+void buildPayload(uint8_t *buf, float temp, float pressure, float rms) {
     int16_t  temp_raw = (int16_t)(temp * 100.0f);
-    uint16_t pres_raw = (uint16_t)(pressure);  // hPa, déjà divisé
+    uint16_t pres_raw = (uint16_t)(pressure);
+    uint16_t mic_raw  = (uint16_t)(rms * 10000.0f);
 
     buf[0] = (DEVICE_ID >> 8) & 0xFF;
     buf[1] =  DEVICE_ID       & 0xFF;
@@ -93,23 +119,33 @@ void buildPayload(uint8_t *buf, float temp, float pressure) {
     buf[3] =  temp_raw        & 0xFF;
     buf[4] = (pres_raw  >> 8) & 0xFF;
     buf[5] =  pres_raw        & 0xFF;
+    buf[6] = (mic_raw   >> 8) & 0xFF;
+    buf[7] =  mic_raw         & 0xFF;
 }
 
 void loop() {
-    float temp     = bmp.readTemperature();
-    float pressure = bmp.readPressure() / 100.0f;  // Pa → hPa
+    static uint32_t last_send = 0;
 
-    Serial.printf("[BMP280] Temp: %.2f °C | Pressure: %.2f hPa\n", temp, pressure);
+    // Lecture micro en continu pour garder le DMA actif
+    float rms = micReadRMS(MIC_BUFFER_SIZE);
 
-    uint8_t payload[6];
-    buildPayload(payload, temp, pressure);
+    if (millis() - last_send >= 10000) {
+        float temp     = bmp.readTemperature();
+        float pressure = bmp.readPressure() / 100.0f;
 
-    int state = radio.transmit(payload, sizeof(payload));
-    if (state == RADIOLIB_ERR_NONE) {
-        Serial.printf("[LoRa] Sent %d bytes OK\n", sizeof(payload));
-    } else {
-        Serial.printf("[LoRa] TX error: %d\n", state);
+        Serial.printf("[BMP280] Temp: %.2f °C | Pressure: %.2f hPa\n", temp, pressure);
+        Serial.printf("[MIC]    RMS: %.4f\n", rms);
+
+        uint8_t payload[8];
+        buildPayload(payload, temp, pressure, rms);
+
+        int state = radio.transmit(payload, sizeof(payload));
+        if (state == RADIOLIB_ERR_NONE) {
+            Serial.printf("[LoRa] Sent %d bytes OK\n", sizeof(payload));
+        } else {
+            Serial.printf("[LoRa] TX error: %d\n", state);
+        }
+
+        last_send = millis();
     }
-
-    delay(10000);
 }
