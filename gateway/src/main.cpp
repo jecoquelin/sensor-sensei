@@ -45,7 +45,8 @@ SNR - rapport signal/bruit, en dB
 // byte 0-1 : device id   (uint16, big-endian)
 // byte 2-3 : température (int16, °C × 100)
 // byte 4-5 : pression    (uint16, hPa)
-#define PAYLOAD_LEN 6
+// byte 6-7 : bruit       (int16, dB × 10)
+#define PAYLOAD_LEN 8
 
 SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY);
 
@@ -65,9 +66,11 @@ void decodeAndDisplay(uint8_t *buf, uint8_t len) {
     uint16_t device_id = ((uint16_t)buf[0] << 8) | buf[1];
     int16_t  temp_raw  = ((int16_t)buf[2]  << 8) | buf[3];
     uint16_t pres_raw  = ((uint16_t)buf[4] << 8) | buf[5];
+    int16_t  noise_raw = ((int16_t)buf[6]  << 8) | buf[7];
 
-    float temp     = temp_raw / 100.0f;
+    float temp     = temp_raw  / 100.0f;
     float pressure = (float)pres_raw;
+    float noise_db = noise_raw / 10.0f;
     float rssi     = radio.getRSSI();
     float snr      = radio.getSNR();
 
@@ -75,11 +78,12 @@ void decodeAndDisplay(uint8_t *buf, uint8_t len) {
     Serial.printf("Device ID  : 0x%04X\n", device_id);
     Serial.printf("Température: %.2f °C\n", temp);
     Serial.printf("Pression   : %.0f hPa\n", pressure);
+    Serial.printf("Bruit      : %.1f dB\n",  noise_db);
     Serial.printf("RSSI       : %.1f dBm\n", rssi);
     Serial.printf("SNR        : %.1f dB\n",  snr);
     Serial.println("─────────────────────────────");
 
-    displayPacket(device_id, temp, pressure, rssi, snr);
+    displayPacket(device_id, temp, pressure, noise_db, rssi, snr);
 }
 
 void setup() {
