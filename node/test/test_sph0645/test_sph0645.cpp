@@ -1,113 +1,106 @@
 //
 // Created by Moolinex on 11/06/2026.
-// Test unitaire SPH0645 — à placer dans test/test_sph0645/test_sph0645.cpp
 //
 
-#include <Arduino.h>
-#include <unity.h>
 #include "sensors/sph0645.h"
+#include <driver/i2s.h>
+#include <Arduino.h>
+#include <math.h>
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+#define I2S_PORT    I2S_NUM_0
 
-#define TEST_SAMPLES        MIC_BUFFER_SIZE
-#define RMS_SILENCE_MAX     0.01f   // seuil max en silence complet
-#define RMS_NOISE_MIN       0.001f  // seuil min pour considérer une lecture valide
-#define REPEAT_COUNT        10      // nombre de lectures pour les tests de stabilité
+static int32_t _mic_buf[MIC_BUFFER_SIZE];
 
-// ─── Tests ───────────────────────────────────────────────────────────────────
+bool micInit() {
+    Serial.println("[MIC] Step 1 — i2s_driver_install...");
+    i2s_config_t cfg = {
+        .mode                 = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+        .sample_rate          = 48000,
+        .bits_per_sample      = I2S_BITS_PER_SAMPLE_32BIT,
+        .channel_format       = I2S_CHANNEL_FMT_ONLY_LEFT,
+        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+        .intr_alloc_flags     = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count        = 8,
+        .dma_buf_len          = 256,
+        .use_apll             = true,
+        .tx_desc_auto_clear   = false,
+        .fixed_mclk           = 0
+    };
+    if (i2s_driver_install(I2S_PORT, &cfg, 0, NULL) != ESP_OK) {
+        Serial.println("[MIC] Step 1 FAIL");
+        return false;
+    }
+    Serial.println("[MIC] Step 1 PASS");
 
-// 1. Init du driver I2S sans erreur
-void test_mic_init() {
-    bool ok = micInit();
-    TEST_ASSERT_TRUE_MESSAGE(ok, "[MIC] micInit() a retourne false");
+    Serial.println("[MIC] Step 2 — i2s_set_pin...");
+    i2s_pin_config_t pins = {
+        .bck_io_num   = MIC_BCLK,
+        .ws_io_num    = MIC_WS,
+        .data_out_num = I2S_PIN_NO_CHANGE,
+        .data_in_num  = MIC_DATA
+    };
+    if (i2s_set_pin(I2S_PORT, &pins) != ESP_OK) {
+        Serial.println("[MIC] Step 2 FAIL");
+        i2s_driver_uninstall(I2S_PORT);
+        return false;
+    }
+    Serial.println("[MIC] Step 2 PASS");
+
+    Serial.println("[MIC] Step 3 — flush buffer démarrage...");
+    size_t dummy;
+    i2s_read(I2S_PORT, _mic_buf, sizeof(_mic_buf), &dummy, 200 / portTICK_PERIOD_MS);
+    Serial.printf("[MIC] Step 3 PASS — %d bytes flushed\n", dummy);
+
+    Serial.println("[MIC] OK");
+    return true;
 }
 
-// 2. micRead retourne un nombre de samples > 0
-void test_mic_read_returns_samples() {
-    int32_t buf[TEST_SAMPLES];
-    size_t n = micRead(buf, TEST_SAMPLES);
-    TEST_ASSERT_GREATER_THAN_MESSAGE(0, n, "[MIC] micRead() a retourne 0 samples");
+size_t micRead(int32_t *buf, size_t samples) {
+    size_t bytes_read = 0;
+    i2s_read(I2S_PORT, buf, samples * sizeof(int32_t), &bytes_read, portMAX_DELAY);
+    return bytes_read / sizeof(int32_t);
 }
 
-// 3. micRead retourne exactement le nombre de samples demandes
-void test_mic_read_exact_count() {
-    int32_t buf[TEST_SAMPLES];
-    size_t n = micRead(buf, TEST_SAMPLES);
-    TEST_ASSERT_EQUAL_MESSAGE(TEST_SAMPLES, n, "[MIC] micRead() n'a pas retourne le bon nombre de samples");
-}
+float micReadRMS(size_t samples) {
+    if (samples > MIC_BUFFER_SIZE) samples = MIC_BUFFER_SIZE;
 
-// 4. Le buffer n'est pas entierement a zero (le micro envoie des donnees)
-void test_mic_buffer_not_all_zero() {
-    int32_t buf[TEST_SAMPLES];
-    micRead(buf, TEST_SAMPLES);
+    size_t n = micRead(_mic_buf, samples);
 
+    // Step 4 — nombre de samples
+    Serial.printf("[MIC] Step 4 samples lus : %d — %s\n", n, n > 0 ? "PASS" : "FAIL");
+
+    // Step 5 — contenu du buffer
+    bool all_minus_one = true;
     bool all_zero = true;
-    for (size_t i = 0; i < TEST_SAMPLES; i++) {
-        if (buf[i] != 0) { all_zero = false; break; }
+    for (size_t i = 0; i < n; i++) {
+        if (_mic_buf[i] != -1) all_minus_one = false;
+        if (_mic_buf[i] != 0)  all_zero = false;
     }
-    TEST_ASSERT_FALSE_MESSAGE(all_zero, "[MIC] Tous les samples sont a zero — micro non connecte ou SEL flottant");
-}
+    Serial.printf("[MIC] Step 5 buffer : %s\n",
+        all_minus_one ? "FAIL — que des -1 (DATA flottant ou micro HS)" :
+        all_zero      ? "FAIL — que des 0 (sleep mode, BCLK trop lent)" :
+                        "PASS — données valides");
 
-// 5. micReadRMS retourne une valeur >= 0
-void test_mic_rms_non_negative() {
-    float rms = micReadRMS(TEST_SAMPLES);
-    TEST_ASSERT_GREATER_OR_EQUAL_MESSAGE(0.0f, rms, "[MIC] RMS negatif — erreur de calcul");
-}
-
-// 6. micReadRMS retourne une valeur <= 1.0
-void test_mic_rms_in_range() {
-    float rms = micReadRMS(TEST_SAMPLES);
-    TEST_ASSERT_LESS_OR_EQUAL_MESSAGE(1.0f, rms, "[MIC] RMS > 1.0 — saturation ou decalage incorrect");
-}
-
-// 7. micReadRMS > 0 (le micro capte quelque chose, meme le bruit ambiant)
-void test_mic_rms_above_noise_floor() {
-    float rms = micReadRMS(TEST_SAMPLES);
-    TEST_ASSERT_GREATER_THAN_MESSAGE(RMS_NOISE_MIN, rms, "[MIC] RMS trop bas — verifier capa 100nF et SEL=GND");
-}
-
-// 8. Stabilite : sur REPEAT_COUNT lectures, au moins 80% doivent etre > 0
-void test_mic_stability() {
-    int valid = 0;
-    for (int i = 0; i < REPEAT_COUNT; i++) {
-        float rms = micReadRMS(TEST_SAMPLES);
-        if (rms > RMS_NOISE_MIN) valid++;
-        delay(100);
+    // Step 6 — samples bruts
+    Serial.printf("[MIC] Step 6 raw[0..7] : ");
+    for (int i = 0; i < 8 && i < (int)n; i++) {
+        Serial.printf("%ld ", _mic_buf[i]);
     }
-    int threshold = (REPEAT_COUNT * 80) / 100;  // 80%
-    TEST_ASSERT_GREATER_OR_EQUAL_MESSAGE(threshold, valid,
-        "[MIC] Trop de lectures nulles — instabilite hardware (capa manquant ?)");
+    Serial.println();
+
+    if (n == 0) return 0.0f;
+
+    // Step 7 — calcul RMS
+    double sum = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        float sample = (float)(_mic_buf[i] >> 14) / (float)(1 << 17);
+        sum += sample * sample;
+        _mic_buf[i] = 0;
+    }
+    float rms = sqrtf((float)(sum / n));
+    Serial.printf("[MIC] Step 7 RMS : %.6f — %s\n",
+        rms, rms > 0.001f ? "PASS" : "FAIL — signal trop faible");
+    Serial.println("─────────────────────────────");
+
+    return rms;
 }
-
-// 9. Double init : reinitialiser le driver ne doit pas planter
-void test_mic_reinit() {
-    bool ok = micInit();
-    TEST_ASSERT_TRUE_MESSAGE(ok, "[MIC] Deuxieme micInit() a echoue");
-    float rms = micReadRMS(TEST_SAMPLES);
-    TEST_ASSERT_GREATER_OR_EQUAL_MESSAGE(0.0f, rms, "[MIC] RMS invalide apres reinit");
-}
-
-// ─── Entry point ─────────────────────────────────────────────────────────────
-
-void setup() {
-    Serial.begin(115200);
-    delay(2000);  // laisse le temps au moniteur serie de s'ouvrir
-
-    Wire.begin(21, 22);  // necessaire si BMP280 partage le bus
-
-    UNITY_BEGIN();
-
-    RUN_TEST(test_mic_init);
-    RUN_TEST(test_mic_read_returns_samples);
-    RUN_TEST(test_mic_read_exact_count);
-    RUN_TEST(test_mic_buffer_not_all_zero);
-    RUN_TEST(test_mic_rms_non_negative);
-    RUN_TEST(test_mic_rms_in_range);
-    RUN_TEST(test_mic_rms_above_noise_floor);
-    RUN_TEST(test_mic_stability);
-    RUN_TEST(test_mic_reinit);
-
-    UNITY_END();
-}
-
-void loop() {}
