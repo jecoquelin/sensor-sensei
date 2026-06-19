@@ -1,3 +1,14 @@
+/*
+ * SensorSensei — Gateway (Heltec WiFi LoRa 32 V3)
+ *
+ * Le gateway écoute en permanence sur 868 MHz. À chaque paquet reçu :
+ *   1. Vérifie que l'expéditeur est autorisé (gatekeeper)
+ *   2. Affiche les données sur l'écran OLED
+ *   3. Envoie les données à l'API sensor.community via HTTPS
+ *
+ * Contrairement au node, le gateway est alimenté sur USB et tourne en continu.
+ */
+
 #include <Arduino.h>
 #include <WiFi.h>
 #include "config.h"
@@ -6,6 +17,8 @@
 #include "gatekeeper.h"
 #include "http/sensor_community.h"
 
+// Tente de (re)connecter le WiFi. Appelé au setup et avant chaque envoi HTTP
+// car la connexion peut tomber entre deux paquets LoRa.
 static void wifiConnect() {
     if (WiFi.status() == WL_CONNECTED) return;
 
@@ -13,6 +26,8 @@ static void wifiConnect() {
     displayStatus("Connexion WiFi...");
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
+    // Timeout 15 s — si le WiFi est indisponible, le gateway continue d'écouter
+    // le LoRa et retente à la prochaine réception de paquet.
     unsigned long start = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - start < 15000)
         delay(500);
@@ -29,19 +44,23 @@ void setup() {
     displayInit();
     wifiConnect();
 
+    // LoRa doit être initialisé avant d'entrer dans loop()
     if (!loraInit()) {
         displayError("LoRa init failed");
-        while (1);
+        while (1);  // bloquant — redémarrer la carte si ce cas arrive
     }
     displayStatus("Ecoute 868 MHz...");
 }
 
 void loop() {
     LoRaFrame frame;
+
+    // loraReceive() est non-bloquant — retourne false si aucun paquet n'est disponible
     if (!loraReceive(frame)) return;
 
     const SensorPayload &p = frame.payload;
 
+    // Valide l'expéditeur et les plages de valeurs capteur
     if (!gatekeeperValidate(p)) {
         displayError("Paquet rejeté");
         return;
@@ -58,6 +77,7 @@ void loop() {
 
     displayPacket(p.device_id, p.temperature, p.pressure, p.pm25, frame.rssi, frame.snr);
 
+    // Reconnexion WiFi si nécessaire avant l'envoi HTTP
     wifiConnect();
     if (WiFi.status() == WL_CONNECTED) {
         if (!scSend(p))
