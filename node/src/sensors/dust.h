@@ -23,8 +23,7 @@ Branchement Waveshare Dust Sensor
 
 // Tension de base à l'air propre (mV) — à recalibrer selon ton environnement.
 // Mesure le voltage brut à l'air propre et ajuste cette valeur.
-// #define DUST_NO_DUST_VOLTAGE 400.0f
-#define DUST_NO_DUST_VOLTAGE 2320.0f
+#define DUST_NO_DUST_VOLTAGE 400.0f
 
 // Tension système ESP32 en mV
 #define DUST_SYS_VOLTAGE     3300.0f

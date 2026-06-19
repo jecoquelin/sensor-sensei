@@ -1,7 +1,7 @@
 #include "gatekeeper.h"
 #include <Arduino.h>
 
-static bool isAuthorized(uint16_t device_id) {
+static bool isAuthorized(uint32_t device_id) {
     // Si la whitelist est vide, on accepte tout (mode dev)
     // En prod : retirer ce guard et remplir AUTHORIZED_DEVICES
     if (AUTHORIZED_DEVICES_COUNT == 0) return true;
@@ -26,11 +26,11 @@ static bool isInRange(const SensorPayload &p) {
 
 bool gatekeeperValidate(const SensorPayload &p) {
     if (!isAuthorized(p.device_id)) {
-        Serial.printf("[GK] Device non autorisé: 0x%04X\n", p.device_id);
+        Serial.printf("[GK] Device non autorisé: 0x%08X\n", p.device_id);
         return false;
     }
     if (!isInRange(p)) return false;
 
-    Serial.printf("[GK] OK — Device 0x%04X validé\n", p.device_id);
+    Serial.printf("[GK] OK — Device 0x%08X validé\n", p.device_id);
     return true;
 }

@@ -3,6 +3,7 @@
 #include <Adafruit_BMP280.h>
 #include <RadioLib.h>
 #include "sensors/dust.h"
+#include "../../shared/payload.h"
 
 /*
 Branchement BMP280 (HW-611)
@@ -63,16 +64,8 @@ Branchement SX1276 (intégré T-Beam)
 #define LORA_SYNC_WORD  0x12    // private network
 #define LORA_POWER      14      // dBm
 
-// ─── Device ID (2 bytes) ─────────────────────────────────────────────────────
-#define DEVICE_ID  0x0001
-
-// ─── Payload layout ──────────────────────────────────────────────────────────
-// byte 0-1 : device id      (uint16, big-endian)
-// byte 2-3 : temperature    (int16, °C × 100)
-// byte 4-5 : pressure       (uint16, hPa)
-// byte 6-7 : pm2.5          (uint16, ug/m³ × 10)
-// total: 8 bytes
-#define PAYLOAD_SIZE 8
+// ─── Device ID — 32 bits bas du MAC, lu une seule fois au boot ───────────────
+static uint32_t DEVICE_ID;
 
 SX1276 radio = new Module(LORA_NSS, LORA_DIO0, LORA_RST, LORA_DIO1);
 Adafruit_BMP280 bmp;
@@ -80,6 +73,8 @@ DustSensor dust(2, 36);
 
 void setup() {
     Serial.begin(115200);
+    DEVICE_ID = (uint32_t)(ESP.getEfuseMac() & 0xFFFFFFFF);
+    Serial.printf("[NODE]   Device ID: 0x%08X\n", DEVICE_ID);
 
     // I2C for BMP280
     Wire.begin(21, 22);
@@ -104,21 +99,6 @@ void setup() {
     Serial.println("[LoRa]   OK");
 }
 
-void buildPayload(uint8_t *buf, float temp, float pressure, float pm25) {
-    int16_t  temp_raw = (int16_t)(temp * 100.0f);
-    uint16_t pres_raw = (uint16_t)(pressure);       // hPa, déjà divisé
-    uint16_t pm25_raw = (uint16_t)(pm25 * 10.0f);   // ug/m³ × 10 → 1 décimale
-
-    buf[0] = (DEVICE_ID >> 8) & 0xFF;
-    buf[1] =  DEVICE_ID       & 0xFF;
-    buf[2] = (temp_raw  >> 8) & 0xFF;
-    buf[3] =  temp_raw        & 0xFF;
-    buf[4] = (pres_raw  >> 8) & 0xFF;
-    buf[5] =  pres_raw        & 0xFF;
-    buf[6] = (pm25_raw  >> 8) & 0xFF;
-    buf[7] =  pm25_raw        & 0xFF;
-}
-
 void loop() {
     float temp     = bmp.readTemperature();
     float pressure = bmp.readPressure() / 100.0f;  // Pa → hPa
@@ -128,8 +108,9 @@ void loop() {
     Serial.printf("[DUST]   PM2.5: %.1f ug/m3 | Voltage: %.0f mV\n",
     pm25, dust.getLastVoltage());
 
-    uint8_t payload[PAYLOAD_SIZE];
-    buildPayload(payload, temp, pressure, pm25);
+    SensorPayload p = { DEVICE_ID, temp, pressure, pm25 };
+    uint8_t payload[PAYLOAD_LEN];
+    encodePayload(payload, p);
 
     int state = radio.transmit(payload, sizeof(payload));
     if (state == RADIOLIB_ERR_NONE) {
