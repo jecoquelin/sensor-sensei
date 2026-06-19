@@ -68,9 +68,6 @@ float DustSensor::read() {
         _lastDensity = 0.0f;
     }
 
-    // 6. Vide le buffer après chaque mesure pour éviter l'inertie entre cycles
-    resetBuffer();
-
     return _lastDensity;
 }
 

@@ -4,7 +4,7 @@
 
 // ─── Whitelist des device_id autorisés ───────────────────────────────────────
 // Ajouter ici les IDs des T-Beams enregistrés
-static const uint16_t AUTHORIZED_DEVICES[] = {
+static const uint32_t AUTHORIZED_DEVICES[] = {
     // 0x1234,
     // 0x5678,
 };

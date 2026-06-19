@@ -34,7 +34,7 @@ void displayStatus(const char *status) {
     _oled.display();
 }
 
-void displayPacket(uint16_t device_id, float temp, float pressure, float dust, float rssi, float snr) {
+void displayPacket(uint32_t device_id, float temp, float pressure, float dust, float rssi, float snr) {
     _oled.clearDisplay();
     _oled.setTextSize(1);
     _oled.setCursor(0, 0);
@@ -44,7 +44,7 @@ void displayPacket(uint16_t device_id, float temp, float pressure, float dust, f
 
     // Line 1: device id
     char buf[22];
-    snprintf(buf, sizeof(buf), "Dev : 0x%04X", device_id);
+    snprintf(buf, sizeof(buf), "Dev:%08X", device_id);
     _oled.println(buf);
 
     // Line 2: temperature
