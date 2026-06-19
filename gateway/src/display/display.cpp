@@ -34,7 +34,7 @@ void displayStatus(const char *status) {
     _oled.display();
 }
 
-void displayPacket(uint16_t device_id, float temp, float pressure, float rssi, float snr) {
+void displayPacket(uint16_t device_id, float temp, float pressure, float dust, float rssi, float snr) {
     _oled.clearDisplay();
     _oled.setTextSize(1);
     _oled.setCursor(0, 0);
@@ -55,11 +55,15 @@ void displayPacket(uint16_t device_id, float temp, float pressure, float rssi, f
     snprintf(buf, sizeof(buf), "Pres: %.0f hPa", pressure);
     _oled.println(buf);
 
-    // Line 4: RSSI
+    // Line 4: pressure
+    snprintf(buf, sizeof(buf), "Dust: %.1f µ/m³", dust);
+    _oled.println(buf);
+
+    // Line 5: RSSI
     snprintf(buf, sizeof(buf), "RSSI: %.1f dBm", rssi);
     _oled.println(buf);
 
-    // Line 5: SNR
+    // Line 6: SNR
     snprintf(buf, sizeof(buf), "SNR : %.1f dB", snr);
     _oled.println(buf);
 
