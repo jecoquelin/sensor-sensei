@@ -18,14 +18,20 @@ struct PortalState {
     bool apReady = false;
     bool staConnected = false;
     bool loraReady = false;
+    bool hasLastPacket = false;
     unsigned long lastPacketMs = 0;
     char apIp[16] = "0.0.0.0";
     char staSsid[33] = "-";
     char staIp[16] = "0.0.0.0";
     char staMessage[64] = "Not connected";
     char loraMessage[64] = "Not ready";
-    char lastPacketSummary[192] = "No packet received yet";
     char whitelistSummary[256] = "accept all nodes";
+    uint32_t lastDeviceId = 0;
+    float lastTemperature = 0.0f;
+    float lastPressure = 0.0f;
+    float lastPm25 = 0.0f;
+    float lastRssi = 0.0f;
+    float lastSnr = 0.0f;
 };
 
 PortalState state;
@@ -53,6 +59,20 @@ static const char *jsonBool(bool value) {
     return value ? "true" : "false";
 }
 
+static void formatLastPacket(char *dst, size_t dstSize) {
+    if (!state.hasLastPacket) {
+        strncpy(dst, "No packet received yet", dstSize - 1);
+        dst[dstSize - 1] = '\0';
+        return;
+    }
+
+    unsigned long ageSec = (millis() - state.lastPacketMs) / 1000UL;
+    snprintf(dst, dstSize,
+             "Device 0x%08X | Temp %.2f C | Pressure %.0f hPa | PM2.5 %.1f ug/m3 | RSSI %.1f dBm | SNR %.1f dB | %lu s ago",
+             state.lastDeviceId, state.lastTemperature, state.lastPressure,
+             state.lastPm25, state.lastRssi, state.lastSnr, ageSec);
+}
+
 static void handleRoot() {
     settingsFormatWhitelist(state.whitelistSummary, sizeof(state.whitelistSummary));
 
@@ -72,6 +92,9 @@ static void handleRoot() {
             used += static_cast<size_t>(written);
         }
     }
+
+    char lastPacketText[192];
+    formatLastPacket(lastPacketText, sizeof(lastPacketText));
 
     char html[4096];
     snprintf(html, sizeof(html),
@@ -105,7 +128,7 @@ static void handleRoot() {
         htmlBool(state.staConnected), state.staSsid, state.staIp, state.staMessage,
         htmlBool(state.loraReady), state.loraMessage,
         state.whitelistSummary,
-        state.lastPacketSummary,
+        lastPacketText,
         settingsGet().wifiSsid,
         whitelistEdit
     );
@@ -114,6 +137,8 @@ static void handleRoot() {
 
 static void handleStatusJson() {
     settingsFormatWhitelist(state.whitelistSummary, sizeof(state.whitelistSummary));
+    char lastPacketText[192];
+    formatLastPacket(lastPacketText, sizeof(lastPacketText));
     char json[1024];
     snprintf(json, sizeof(json),
         "{"
@@ -125,7 +150,14 @@ static void handleStatusJson() {
         "\"lora_ready\":%s,"
         "\"lora_message\":\"%s\","
         "\"whitelist\":\"%s\","
-        "\"last_packet\":\"%s\""
+        "\"last_packet\":\"%s\","
+        "\"last_packet_age_s\":%lu,"
+        "\"last_device_id\":%u,"
+        "\"last_temperature\":%.2f,"
+        "\"last_pressure\":%.0f,"
+        "\"last_pm25\":%.1f,"
+        "\"last_rssi\":%.1f,"
+        "\"last_snr\":%.1f"
         "}",
         jsonBool(state.apReady),
         state.apIp,
@@ -135,7 +167,14 @@ static void handleStatusJson() {
         jsonBool(state.loraReady),
         state.loraMessage,
         state.whitelistSummary,
-        state.lastPacketSummary
+        lastPacketText,
+        state.hasLastPacket ? (millis() - state.lastPacketMs) / 1000UL : 0UL,
+        state.lastDeviceId,
+        state.lastTemperature,
+        state.lastPressure,
+        state.lastPm25,
+        state.lastRssi,
+        state.lastSnr
     );
     server.send(200, "application/json; charset=utf-8", json);
 }
@@ -225,10 +264,11 @@ void portalSetLoraStatus(bool ready, const char *message) {
 
 void portalSetLastPacket(const SensorPayload &p, float rssi, float snr) {
     state.lastPacketMs = millis();
-    snprintf(state.lastPacketSummary, sizeof(state.lastPacketSummary),
-             "Device 0x%08X | Temp %.2f C | Pressure %.0f hPa | PM2.5 %.1f ug/m3 | RSSI %.1f dBm | SNR %.1f dB | %lu ms ago",
-             p.device_id, p.temperature, p.pressure, p.pm25, rssi, snr, 0UL);
-    snprintf(state.lastPacketSummary, sizeof(state.lastPacketSummary),
-             "Device 0x%08X | Temp %.2f C | Pressure %.0f hPa | PM2.5 %.1f ug/m3 | RSSI %.1f dBm | SNR %.1f dB | now",
-             p.device_id, p.temperature, p.pressure, p.pm25, rssi, snr);
+    state.hasLastPacket = true;
+    state.lastDeviceId = p.device_id;
+    state.lastTemperature = p.temperature;
+    state.lastPressure = p.pressure;
+    state.lastPm25 = p.pm25;
+    state.lastRssi = rssi;
+    state.lastSnr = snr;
 }
