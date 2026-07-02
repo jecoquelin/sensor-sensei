@@ -17,6 +17,13 @@
 #include "gatekeeper.h"
 #include "http/sensor_community.h"
 
+static void restartGateway(const char *reason) {
+    Serial.printf("[SYS] %s\n", reason);
+    displayError(reason);
+    delay(2000);
+    ESP.restart();
+}
+
 // Tente de (re)connecter le WiFi. Appelé au setup et avant chaque envoi HTTP
 // car la connexion peut tomber entre deux paquets LoRa.
 static void wifiConnect() {
@@ -46,8 +53,7 @@ void setup() {
 
     // LoRa doit être initialisé avant d'entrer dans loop()
     if (!loraInit()) {
-        displayError("LoRa init failed");
-        while (1);  // bloquant — redémarrer la carte si ce cas arrive
+        restartGateway("LoRa init failed");
     }
     displayStatus("Ecoute 868 MHz...");
 }
