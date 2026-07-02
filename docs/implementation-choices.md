@@ -174,7 +174,7 @@ La précision perdue est négligeable pour ces usages (0.01°C, 1 hPa, 0.1 µg/m
 
 ### Retour d'expérience
 
-Pas de problème d'encodage observé. Les données arrivent correctement sur sensor.community. La configuration de la station a néanmoins demandé du temps : le format attendu par l'API (notamment la distinction pin 1 / pin 11 et l'unité de pression en Pa et non en hPa) n'est pas trivial à retrouver dans la documentation sensor.community.
+Pas de problème d'encodage observé. Les données arrivent correctement sur sensor.community. La configuration de la station a néanmoins demandé du temps : le format attendu par l'API (notamment la distinction pin 1 / pin 3 / pin 11 et l'unité de pression en Pa et non en hPa) n'est pas trivial à retrouver dans la documentation sensor.community.
 
 ---
 

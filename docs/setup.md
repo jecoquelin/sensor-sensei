@@ -112,7 +112,7 @@ Poussière  : 8.3 µg/m³
 RSSI       : -87.5 dBm
 SNR        : 7.2 dB
 ─────────────────────────────
-[SC] pin 11 → OK (201)
+[SC] pin 3  → OK (201)
 [SC] pin 1  → OK (201)
 ```
 

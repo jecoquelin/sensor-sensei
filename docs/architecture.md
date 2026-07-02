@@ -131,9 +131,11 @@ Le gateway envoie deux requêtes HTTPS POST par paquet LoRa reçu :
 
 | Pin | Capteur   | Champs envoyés              |
 |-----|-----------|-----------------------------|
-| 11  | BMP280    | `temperature`, `pressure`   |
+| 3   | BMP280    | `temperature`, `pressure`   |
+| 11  | BME280    | `temperature`, `pressure`, `humidity` |
 | 1   | SDS011*   | `P1` (PM10), `P2` (PM2.5)  |
 
 *Le GP2Y1010 ne distingue pas PM10/PM2.5 — la même valeur est envoyée pour P1 et P2.
+*Le BMP280 n'ayant pas d'humidité, il est publié sur le pin 3 de sensor.community. Le pin 11 est réservé au BME280.*
 
 L'identifiant de station est `esp32-<device_id_decimal>`.
