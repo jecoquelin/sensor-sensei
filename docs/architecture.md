@@ -49,7 +49,8 @@
 | Code Rate     | 4/7    |                                       |
 | Sync Word     | 0x12   | Réseau privé (≠ 0x34 TTN public)     |
 | Puissance TX  | 14 dBm | Maximum légal EU sans licence        |
-| Taille payload | 10 bytes | Sous la limite 51 bytes SF9/125kHz |
+| Taille payload métier | 10 bytes | Sous la limite 51 bytes SF9/125kHz |
+| Taille trame LoRa | 16 bytes | Version + seq + flags + longueur + CRC16 |
 
 ## Format de la payload
 
@@ -66,6 +67,23 @@ Les floats sont convertis en entiers pour éviter IEEE 754 sur 4 bytes par champ
 La structure C++ `SensorPayload` et les fonctions `encodePayload`/`decodePayload` sont
 partagées entre le node et le gateway via `shared/payload.h`.
 
+## Format de la trame LoRa
+
+La payload métier de 10 bytes est encapsulée dans une trame LoRa de 16 bytes :
+
+```
+byte 0    : version      — uint8, version du protocole
+byte 1    : seq          — uint8, incrémenté à chaque émission
+byte 2    : flags        — uint8, réservé pour extensions futures
+byte 3    : payload_len  — uint8, ici toujours 10
+byte 4-13 : payload      — contenu métier décrit ci-dessus
+byte 14-15: CRC16        — CRC-CCITT calculé sur les 14 premiers bytes
+```
+
+Le gateway rejette toute trame dont la version, la longueur ou le CRC ne correspondent pas.
+Il n'y a pas d'ACK applicatif dans l'architecture actuelle ; le `seq` et le jitter servent
+à limiter les collisions et à détecter les pertes de paquets côté réception.
+
 ## Cycle de vie du node
 
 ```
@@ -79,7 +97,8 @@ Réveil
   ├─► Lecture BMP280 (I2C)
   ├─► Lecture GP2Y1010 (ADC)
   │
-  ├─► Encodage payload (10 bytes)
+  ├─► Encodage payload métier (10 bytes)
+  ├─► Encapsulation trame LoRa (version/seq/flags/CRC16)
   ├─► Transmission LoRa
   │
   └─► Deep sleep 5 minutes

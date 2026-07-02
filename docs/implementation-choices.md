@@ -66,6 +66,8 @@ LoRa 868 MHz avec RadioLib, SF9/BW125/CR4-7.
 
 Aucun test de portée longue distance n'a été réalisé. Les tests se sont limités à une dizaine de mètres en intérieur pour vérifier que les données étaient bien reçues, ce qui était le cas. La communication LoRa a fonctionné très rapidement dès la première mise en place, sans nécessiter d'ajustements des paramètres SF/BW.
 
+La trame LoRa a ensuite été durcie avec une version, un `seq`, des `flags`, un CRC16 et un jitter aléatoire avant émission. Il n'y a pas d'ACK applicatif : le lien reste unidirectionnel et la détection de pertes se fait côté gateway via le `seq`.
+
 ---
 
 ## 3. Bibliothèque LoRa : RadioLib vs arduino-LoRa
@@ -152,7 +154,7 @@ Pas de mesure d'autonomie réalisée sur la durée du projet. Le deep sleep fonc
 
 ### Choix retenu
 
-Payload binaire big-endian de 10 bytes (voir `shared/payload.h`).
+Payload métier binaire big-endian de 10 bytes, encapsulé dans une trame LoRa de 16 bytes (voir `shared/payload.h` et `shared/lora_protocol.h`).
 
 ### Justification
 
@@ -164,9 +166,11 @@ et consomme de la batterie.
 |------------------|-----------|------------------------|
 | JSON complet     | ~180 bytes | ~2.5 s                |
 | Payload binaire  | 10 bytes   | ~300 ms               |
+| Trame LoRa       | 16 bytes   | ~450 ms               |
 
-10 bytes est bien sous la limite pratique de 51 bytes pour SF9/125 kHz et laisse
-de la marge pour ajouter des capteurs futurs.
+10 bytes de payload métier restent bien sous la limite pratique de 51 bytes pour SF9/125 kHz.
+La trame complète de 16 bytes laisse encore une marge confortable pour ajouter des champs
+de protocole sans exploser le time-on-air.
 
 Les floats IEEE 754 (4 bytes chacun) sont évités : température encodée en int16 ×100
 (2 bytes), pression en uint16 entier (2 bytes), PM2.5 en uint16 ×10 (2 bytes).
@@ -264,7 +268,7 @@ La whitelist est restée vide en mode dev tout au long du projet (1 seul node te
 **Stabilité du capteur de poussière :** les valeurs PM2.5 varient trop pour être réellement exploitables. Un SDS011 (UART, laser) donnerait des mesures beaucoup plus fiables au prix d'une consommation plus élevée.
 
 Pistes techniques identifiées :
-- Ajouter un accusé de réception (ACK) du gateway vers le node pour confirmer la réception
+- Ajouter un accusé de réception (ACK) du gateway vers le node si l'on passe à un lien bidirectionnel
 - Intégrer l'humidité (BME280 à la place du BMP280) — sensor.community accepte ce champ
 - Chiffrement du payload (AES-128) pour éviter l'usurpation de device_id
 - Remplir la whitelist `AUTHORIZED_DEVICES` en production
