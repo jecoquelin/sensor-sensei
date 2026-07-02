@@ -1,31 +1,22 @@
-
 #pragma once
+
 #include <stdint.h>
-#include "../../shared/payload.h"
+
+#include "../../shared/lora_protocol.h"
 
 /*
 Branchement SX1262 (intégré Heltec V3 - interne)
-┌────────┬────────┐
-│ Signal │  GPIO  │
-├────────┼────────┤
-│ SCK    │ 9      │
-│ MISO   │ 11     │
-│ MOSI   │ 10     │
-│ NSS    │ 8      │
-│ RESET  │ 12     │
-│ DIO1   │ 14     │
-│ BUSY   │ 13     │
-└────────┴────────┘
-
-RSSI - Plus c'est proche de 0, meilleur c'est
-SNR - rapport signal/bruit, en dB
-┌────────────┬────────────┬──────────┬────────────┐
-│ Indicateur │    Bon     │  Limite  │    Mort    │
-├────────────┼────────────┼──────────┼────────────┤
-│ RSSI       │ > -100 dBm │ -110 dBm │ < -120 dBm │
-├────────────┼────────────┼──────────┼────────────┤
-│ SNR        │ > 0 dB     │ -10 dB   │ < -20 dB   │
-└────────────┴────────────┴──────────┴────────────┘
+┌────────┬─────────┐
+│ Signal │  GPIO   │
+├────────┼─────────┤
+│ SCK    │ 9       │
+│ MISO   │ 11      │
+│ MOSI   │ 10      │
+│ NSS    │ 8       │
+│ RESET  │ 12      │
+│ DIO1   │ 14      │
+│ BUSY   │ 13      │
+└────────┴─────────┘
 */
 
 #define LORA_NSS        8
@@ -40,10 +31,13 @@ SNR - rapport signal/bruit, en dB
 #define LORA_SYNC_WORD  0x12
 
 struct LoRaFrame {
+    uint8_t       version;
+    uint8_t       sequence;
+    uint8_t       flags;
     SensorPayload payload;
     float         rssi;
     float         snr;
 };
 
 bool loraInit();
-bool loraReceive(LoRaFrame &frame);  // retourne true si une trame est dispo
+bool loraReceive(LoRaFrame &frame);

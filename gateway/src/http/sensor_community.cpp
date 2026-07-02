@@ -1,4 +1,5 @@
 #include "sensor_community.h"
+#include <cstring>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <Arduino.h>
