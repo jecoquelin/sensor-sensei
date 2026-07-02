@@ -1,4 +1,5 @@
 #include "dust.h"
+#include <cstring>
 
 // ─── Constructeur ────────────────────────────────────────────────────────────
 DustSensor::DustSensor(uint8_t iledPin, uint8_t voutPin)
