@@ -11,6 +11,7 @@
 #include <Wire.h>
 #include <SPI.h>
 #include <Adafruit_BMP280.h>
+#include <cmath>
 #include <RadioLib.h>
 #include <XPowersLib.h>
 #include "sensors/dust.h"
@@ -92,6 +93,36 @@ DustSensor     dust(2, 36);
 XPowersAXP2101 PMU;
 static bool    pmuOk = false;  // faux si PMIC absent ou non reconnu
 
+static bool readBmp280(float &temperature, float &pressure) {
+    temperature = bmp.readTemperature();
+    pressure = bmp.readPressure() / 100.0f;  // Pa → hPa pour la payload
+
+    if (!isfinite(temperature) || !isfinite(pressure)) {
+        Serial.println("[BMP280] Invalid reading");
+        return false;
+    }
+
+    if (temperature < -40.0f || temperature > 85.0f ||
+        pressure < 300.0f || pressure > 1100.0f) {
+        Serial.printf("[BMP280] Out of range: Temp %.2f C | Pressure %.2f hPa\n",
+                      temperature, pressure);
+        return false;
+    }
+
+    return true;
+}
+
+static bool readDust(float &pm25) {
+    pm25 = dust.read();
+
+    if (!isfinite(pm25) || pm25 < 0.0f) {
+        Serial.printf("[DUST] Invalid reading: %.1f ug/m3\n", pm25);
+        return false;
+    }
+
+    return true;
+}
+
 // ─── Gestion PMIC AXP2101 ─────────────────────────────────────────────────────
 static void pmicInit() {
     // PMU.init() initialise Wire en interne — pas besoin de Wire.begin() séparé
@@ -165,9 +196,14 @@ void setup() {
     Serial.println("[DUST]   OK");
 
     // ─── Lecture des capteurs ─────────────────────────────────────────────────
-    float temp     = bmp.readTemperature();
-    float pressure = bmp.readPressure() / 100.0f;  // Pa → hPa pour la payload
-    float pm25     = dust.read();
+    float temp     = 0.0f;
+    float pressure = 0.0f;
+    float pm25     = 0.0f;
+
+    if (!readBmp280(temp, pressure) || !readDust(pm25)) {
+        Serial.println("[NODE]   Sensor invalid — skip LoRa TX");
+        enterDeepSleep();
+    }
 
     Serial.printf("[BMP280] Temp: %.2f C | Pressure: %.2f hPa\n", temp, pressure);
     Serial.printf("[DUST]   PM2.5: %.1f ug/m3 | Voltage: %.0f mV\n",
