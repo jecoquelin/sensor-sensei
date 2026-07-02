@@ -1,4 +1,5 @@
 #include "sensor_community.h"
+#include <cstring>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <Arduino.h>
@@ -7,8 +8,9 @@
 
 // Envoie un corps JSON à sensor.community pour un pin donné.
 // sensor.community identifie le type de capteur par le numéro de pin dans le header :
-//   pin 1  → SDS011  (PM1/PM2.5 en µg/m³)
-//   pin 11 → BME280  (température, pression, humidité)
+//   pin 1 → SDS011 / PM sensor  (P1, P2)
+//   pin 3 → BMP180 / BMP280     (température, pression)
+//   pin 11 → BME280             (température, pression, humidité)
 static bool postPin(const char *sensor_id, const char *pin, const char *body) {
     WiFiClientSecure client;
     // setInsecure() désactive la vérification du certificat SSL.
@@ -38,7 +40,8 @@ bool scSend(const SensorPayload &p) {
     char sensor_id[20];
     snprintf(sensor_id, sizeof(sensor_id), "esp32-%u", p.device_id);
 
-    // ── BMP280 → pin 11 ──────────────────────────────────────────────────────
+    // ── BMP280 → pin 3 ───────────────────────────────────────────────────────
+    // Le BMP280 ne mesure pas l'humidité. On envoie uniquement température + pression.
     // La pression doit être envoyée en Pa (pascals), pas en hPa.
     // sensor.community affiche ensuite la valeur convertie en hPa dans l'interface.
     char bmp_body[220];
@@ -68,11 +71,11 @@ bool scSend(const SensorPayload &p) {
 
     Serial.println("─── sensor.community payload ───");
     Serial.printf("X-Sensor: %s\n", sensor_id);
-    Serial.printf("[Pin 11] %s\n", bmp_body);
+    Serial.printf("[Pin 3]  %s\n", bmp_body);
     Serial.printf("[Pin 1]  %s\n", dust_body);
     Serial.println("────────────────────────────────");
 
-    bool ok = postPin(sensor_id, "11", bmp_body);
+    bool ok = postPin(sensor_id, "3", bmp_body);
     ok &= postPin(sensor_id, "1",  dust_body);
     return ok;
 }
