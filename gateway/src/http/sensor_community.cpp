@@ -2,6 +2,7 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <Arduino.h>
+#include <cstring>
 
 #define SC_URL "https://api.sensor.community/v1/push-sensor-data/"
 
