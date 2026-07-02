@@ -17,6 +17,7 @@
 #include "lora/receiver.h"
 #include "gatekeeper.h"
 #include "http/sensor_community.h"
+#include "settings/settings.h"
 #include "portal/portal.h"
 
 static void restartGateway(const char *reason) {
@@ -29,7 +30,11 @@ static void restartGateway(const char *reason) {
 // Tente de (re)connecter le WiFi. Appelé au setup et avant chaque envoi HTTP
 // car la connexion peut tomber entre deux paquets LoRa.
 static void wifiConnect() {
-    if (strlen(WIFI_SSID) == 0 || strlen(WIFI_PASSWORD) == 0) {
+    const GatewaySettings &cfg = settingsGet();
+    const char *ssid = cfg.wifiSsid[0] != '\0' ? cfg.wifiSsid : WIFI_SSID;
+    const char *password = cfg.wifiPassword[0] != '\0' ? cfg.wifiPassword : WIFI_PASSWORD;
+
+    if (strlen(ssid) == 0 || strlen(password) == 0) {
         Serial.println("[WiFi] No station credentials configured");
         portalSetStationStatus(false, "-", WiFi.localIP(), "No station credentials configured");
         return;
@@ -37,9 +42,9 @@ static void wifiConnect() {
 
     if (WiFi.status() == WL_CONNECTED) return;
 
-    Serial.printf("[WiFi] Connexion à %s...\n", WIFI_SSID);
+    Serial.printf("[WiFi] Connexion à %s...\n", ssid);
     displayStatus("Connexion WiFi...");
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    WiFi.begin(ssid, password);
 
     // Timeout 15 s — si le WiFi est indisponible, le gateway continue d'écouter
     // le LoRa et retente à la prochaine réception de paquet.
@@ -54,7 +59,7 @@ static void wifiConnect() {
 
     portalSetStationStatus(
         WiFi.status() == WL_CONNECTED,
-        WIFI_SSID,
+        ssid,
         WiFi.localIP(),
         WiFi.status() == WL_CONNECTED ? "Connected" : "Timeout"
     );
@@ -62,6 +67,11 @@ static void wifiConnect() {
 
 void setup() {
     Serial.begin(115200);
+
+    settingsLoad();
+    gatekeeperInit();
+    const GatewaySettings &cfg = settingsGet();
+    gatekeeperSetWhitelist(cfg.whitelist, cfg.whitelistCount);
 
     displayInit();
     if (!portalInit()) {
