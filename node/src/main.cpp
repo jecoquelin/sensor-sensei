@@ -13,8 +13,10 @@
 #include <Adafruit_BMP280.h>
 #include <RadioLib.h>
 #include <XPowersLib.h>
+#include <esp_system.h>
 #include "sensors/dust.h"
 #include "../../shared/payload.h"
+#include "../../shared/lora_protocol.h"
 
 /*
 Branchement BMP280 (HW-611)
@@ -84,6 +86,7 @@ Branchement SX1276 (intégré T-Beam, SPI interne)
 // Évite de relire l'eFuse MAC (opération lente) à chaque réveil.
 RTC_DATA_ATTR static uint32_t DEVICE_ID  = 0;
 RTC_DATA_ATTR static bool     first_boot = true;
+RTC_DATA_ATTR static uint8_t   TX_SEQUENCE = 0;
 
 // ─── Objets matériels ─────────────────────────────────────────────────────────
 SX1276         radio = new Module(LORA_NSS, LORA_DIO0, LORA_RST, LORA_DIO1);
@@ -124,6 +127,13 @@ static void enterDeepSleep() {
     Serial.flush();  // vide le buffer UART avant la coupure
     esp_sleep_enable_timer_wakeup(SLEEP_INTERVAL_US);
     esp_deep_sleep_start();
+}
+
+static void applyTxJitter() {
+    // Petit jitter aleatoire pour limiter les emissions simultanees si plusieurs nodes se reveillent en meme temps.
+    uint32_t jitterMs = 100 + (esp_random() % 900);
+    Serial.printf("[LoRa]   Jitter %lu ms avant emission\n", (unsigned long)jitterMs);
+    delay(jitterMs);
 }
 
 void setup() {
@@ -178,9 +188,18 @@ void setup() {
     uint8_t payload[PAYLOAD_LEN];
     encodePayload(payload, p);
 
-    state = radio.transmit(payload, sizeof(payload));
+    applyTxJitter();
+
+    uint8_t frame[LORA_PROTOCOL_FRAME_LEN];
+    uint8_t seq = TX_SEQUENCE++;
+    size_t frameLen = loraProtocolEncodeFrame(frame, seq, LORA_PROTOCOL_FLAG_NONE, payload, sizeof(payload));
+
+    Serial.printf("[LoRa]   Frame v%u seq=%u flags=0x%02X len=%u crc16\n",
+                  LORA_PROTOCOL_VERSION, seq, LORA_PROTOCOL_FLAG_NONE, (unsigned)frameLen);
+
+    state = radio.transmit(frame, frameLen);
     if (state == RADIOLIB_ERR_NONE)
-        Serial.printf("[LoRa]   Sent %d bytes OK\n", sizeof(payload));
+        Serial.printf("[LoRa]   Sent %d bytes OK\n", (int)frameLen);
     else
         Serial.printf("[LoRa]   TX error: %d\n", state);
 
