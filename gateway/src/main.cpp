@@ -11,15 +11,23 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <cstring>
 #include "config.h"
 #include "display/display.h"
 #include "lora/receiver.h"
 #include "gatekeeper.h"
 #include "http/sensor_community.h"
+#include "portal/portal.h"
 
 // Tente de (re)connecter le WiFi. Appelé au setup et avant chaque envoi HTTP
 // car la connexion peut tomber entre deux paquets LoRa.
 static void wifiConnect() {
+    if (strlen(WIFI_SSID) == 0 || strlen(WIFI_PASSWORD) == 0) {
+        Serial.println("[WiFi] No station credentials configured");
+        portalSetStationStatus(false, "-", WiFi.localIP(), "No station credentials configured");
+        return;
+    }
+
     if (WiFi.status() == WL_CONNECTED) return;
 
     Serial.printf("[WiFi] Connexion à %s...\n", WIFI_SSID);
@@ -36,12 +44,22 @@ static void wifiConnect() {
         Serial.printf("[WiFi] Connecté — IP: %s\n", WiFi.localIP().toString().c_str());
     else
         Serial.println("[WiFi] Timeout — données non envoyées ce cycle");
+
+    portalSetStationStatus(
+        WiFi.status() == WL_CONNECTED,
+        WIFI_SSID,
+        WiFi.localIP(),
+        WiFi.status() == WL_CONNECTED ? "Connected" : "Timeout"
+    );
 }
 
 void setup() {
     Serial.begin(115200);
 
     displayInit();
+    if (!portalInit()) {
+        restartGateway("AP init failed");
+    }
     wifiConnect();
 
     // LoRa doit être initialisé avant d'entrer dans loop()
@@ -49,10 +67,13 @@ void setup() {
         displayError("LoRa init failed");
         while (1);  // bloquant — redémarrer la carte si ce cas arrive
     }
+    portalSetLoraStatus(true, "Listening 868 MHz");
     displayStatus("Ecoute 868 MHz...");
 }
 
 void loop() {
+    portalLoop();
+
     LoRaFrame frame;
 
     // loraReceive() est non-bloquant — retourne false si aucun paquet n'est disponible
@@ -76,6 +97,7 @@ void loop() {
     Serial.println("─────────────────────────────");
 
     displayPacket(p.device_id, p.temperature, p.pressure, p.pm25, frame.rssi, frame.snr);
+    portalSetLastPacket(p, frame.rssi, frame.snr);
 
     // Reconnexion WiFi si nécessaire avant l'envoi HTTP
     wifiConnect();
