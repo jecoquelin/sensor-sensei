@@ -58,6 +58,13 @@ static void wifiConnect() {
     );
 }
 
+static void restartGateway(const char *reason) {
+    Serial.printf("[Gateway] %s, restart\n", reason);
+    displayError(reason);
+    delay(2000);
+    ESP.restart();
+}
+
 void setup() {
     Serial.begin(115200);
 
