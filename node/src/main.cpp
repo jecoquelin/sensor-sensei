@@ -10,14 +10,16 @@
 
 #include <Wire.h>
 #include <SPI.h>
+#include <math.h>
 #include <Adafruit_BMP280.h>
 #include <RadioLib.h>
 #include <XPowersLib.h>
 #include "sensors/dust.h"
+#include "sensors/microphone.h"
 #include "../../shared/payload.h"
 
 /*
-Branchement BMP280 (HW-611)
+Branchement BMP280 (HW-611) — désactivé
 ┌────────┬────────────────────┐
 │ HW-611 │       T-Beam       │
 ├────────┼────────────────────┤
@@ -60,6 +62,23 @@ Branchement SX1276 (intégré T-Beam, SPI interne)
 │ DIO0   │ 26     │
 │ DIO1   │ 33     │
 └────────┴────────┘
+
+Branchement SPH0645 (micro I2S)
+┌────────────┬────────────────────┐
+│  SPH0645   │       T-Beam       │
+├────────────┼────────────────────┤
+│ 3V         │ 3.3V               │
+├────────────┼────────────────────┤
+│ GND        │ GND                │
+├────────────┼────────────────────┤
+│ BCLK       │ GPIO 32            │
+├────────────┼────────────────────┤
+│ LRCL (WS)  │ GPIO 25            │
+├────────────┼────────────────────┤
+│ DOUT       │ GPIO 34            │
+├────────────┼────────────────────┤
+│ SEL        │ GND                │
+└────────────┴────────────────────┘
 */
 
 // Durée de veille entre deux mesures. sensor.community accepte des mises à jour
@@ -86,11 +105,12 @@ RTC_DATA_ATTR static uint32_t DEVICE_ID  = 0;
 RTC_DATA_ATTR static bool     first_boot = true;
 
 // ─── Objets matériels ─────────────────────────────────────────────────────────
-SX1276         radio = new Module(LORA_NSS, LORA_DIO0, LORA_RST, LORA_DIO1);
-Adafruit_BMP280 bmp;
-DustSensor     dust(2, 36);
-XPowersAXP2101 PMU;
-static bool    pmuOk = false;  // faux si PMIC absent ou non reconnu
+SX1276           radio = new Module(LORA_NSS, LORA_DIO0, LORA_RST, LORA_DIO1);
+Adafruit_BMP280  bmp;
+DustSensor       dust(2, 36);
+MicrophoneSensor mic;
+XPowersAXP2101   PMU;
+static bool      pmuOk = false;  // faux si PMIC absent ou non reconnu
 
 // ─── Gestion PMIC AXP2101 ─────────────────────────────────────────────────────
 static void pmicInit() {
@@ -148,7 +168,6 @@ void setup() {
         Serial.println("[BMP280] Not found !");
         enterDeepSleep();  // dort quand même pour reprendre au prochain cycle
     }
-    Serial.println("[BMP280] OK");
 
     // SX1276 — ALDO3 est allumé, on peut initialiser RadioLib
     SPI.begin(5, 19, 27, LORA_NSS);
@@ -164,17 +183,27 @@ void setup() {
     dust.begin();
     Serial.println("[DUST]   OK");
 
+    // Micro I2S — non bloquant pour le reste du cycle : en cas d'échec on
+    // continue quand même avec un niveau sonore à 0 plutôt que de perdre
+    // toute la remontée BMP280/dust de ce cycle.
+    bool micOk = mic.begin();
+    if (!micOk)
+        Serial.println("[MIC]    Init failed — mic_level forcé à 0");
+
     // ─── Lecture des capteurs ─────────────────────────────────────────────────
     float temp     = bmp.readTemperature();
     float pressure = bmp.readPressure() / 100.0f;  // Pa → hPa pour la payload
     float pm25     = dust.read();
+    float micLevel = micOk ? mic.read() : 0.0f;
 
     Serial.printf("[BMP280] Temp: %.2f C | Pressure: %.2f hPa\n", temp, pressure);
     Serial.printf("[DUST]   PM2.5: %.1f ug/m3 | Voltage: %.0f mV\n",
                   pm25, dust.getLastVoltage());
+    Serial.printf("[MIC]    RMS: %.4f | %.1f dBFS\n",
+                  micLevel, 20.0f * log10f(micLevel > 0.0f ? micLevel : 1e-9f));
 
     // ─── Encodage et transmission ─────────────────────────────────────────────
-    SensorPayload p = { DEVICE_ID, temp, pressure, pm25 };
+    SensorPayload p = { DEVICE_ID, temp, pressure, pm25, micLevel };
     uint8_t payload[PAYLOAD_LEN];
     encodePayload(payload, p);
 

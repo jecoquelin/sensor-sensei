@@ -71,11 +71,12 @@ void loop() {
     Serial.printf("Température: %.2f °C\n",  p.temperature);
     Serial.printf("Pression   : %.0f hPa\n", p.pressure);
     Serial.printf("Poussière  : %.1f µg/m³\n", p.pm25);
+    Serial.printf("Micro      : %.4f RMS\n", p.mic_level);
     Serial.printf("RSSI       : %.1f dBm\n", frame.rssi);
     Serial.printf("SNR        : %.1f dB\n",  frame.snr);
     Serial.println("─────────────────────────────");
 
-    displayPacket(p.device_id, p.temperature, p.pressure, p.pm25, frame.rssi, frame.snr);
+    displayPacket(p.device_id, p.temperature, p.pressure, p.pm25, p.mic_level, frame.rssi, frame.snr);
 
     // Reconnexion WiFi si nécessaire avant l'envoi HTTP
     wifiConnect();

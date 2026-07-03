@@ -21,6 +21,10 @@ static bool isInRange(const SensorPayload &p) {
         Serial.printf("[GK] Pression hors plage: %.0f hPa\n", p.pressure);
         return false;
     }
+    if (p.mic_level < MIC_LEVEL_MIN || p.mic_level > MIC_LEVEL_MAX) {
+        Serial.printf("[GK] Niveau micro hors plage: %.4f\n", p.mic_level);
+        return false;
+    }
     return true;
 }
 

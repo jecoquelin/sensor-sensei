@@ -2,6 +2,7 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <Arduino.h>
+#include <math.h>
 
 #define SC_URL "https://api.sensor.community/v1/push-sensor-data/"
 
@@ -9,6 +10,7 @@
 // sensor.community identifie le type de capteur par le numéro de pin dans le header :
 //   pin 1  → SDS011  (PM1/PM2.5 en µg/m³)
 //   pin 11 → BME280  (température, pression, humidité)
+//   pin 15 → DNMS    (bruit — value_type "noise_LAeq", sans préfixe "DNMS_")
 static bool postPin(const char *sensor_id, const char *pin, const char *body) {
     WiFiClientSecure client;
     // setInsecure() désactive la vérification du certificat SSL.
@@ -66,13 +68,29 @@ bool scSend(const SensorPayload &p) {
         p.pm25, p.pm25
     );
 
+    // ── Micro → pin 15 (format DNMS) ─────────────────────────────────────────
+    // Le SPH0645 n'est pas calibré en pression acoustique : on envoie le niveau
+    // RMS converti en dBFS (référencé au plein échelle numérique, pas au dB SPL
+    // physique). Utile pour suivre des tendances relatives, pas une mesure absolue.
+    char mic_body[160];
+    float mic_dbfs = 20.0f * log10f(p.mic_level > 0.0f ? p.mic_level : 1e-9f);
+    snprintf(mic_body, sizeof(mic_body),
+        "{\"software_version\":\"SensorSensei-1.0\","
+        "\"sensordatavalues\":["
+        "{\"value_type\":\"noise_LAeq\",\"value\":\"%.1f\"}"
+        "]}",
+        mic_dbfs
+    );
+
     Serial.println("─── sensor.community payload ───");
     Serial.printf("X-Sensor: %s\n", sensor_id);
     Serial.printf("[Pin 11] %s\n", bmp_body);
     Serial.printf("[Pin 1]  %s\n", dust_body);
+    Serial.printf("[Pin 15] %s\n", mic_body);
     Serial.println("────────────────────────────────");
 
     bool ok = postPin(sensor_id, "11", bmp_body);
     ok &= postPin(sensor_id, "1",  dust_body);
+    ok &= postPin(sensor_id, "15", mic_body);
     return ok;
 }

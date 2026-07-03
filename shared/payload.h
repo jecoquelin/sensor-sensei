@@ -8,15 +8,16 @@
  * Les valeurs flottantes sont converties en entiers pour minimiser
  * la taille (pas de IEEE 754 sur 4 bytes pour chaque champ).
  *
- * byte 0-3 : device_id   — uint32 big-endian, 32 bits bas du MAC ESP32
- * byte 4-5 : température — int16 big-endian, °C × 100  (ex: 21.5°C → 2150)
- * byte 6-7 : pression    — uint16 big-endian, hPa entier (ex: 1013 hPa → 1013)
- * byte 8-9 : pm2.5       — uint16 big-endian, µg/m³ × 10 (ex: 12.5 → 125)
+ * byte  0-3  : device_id   — uint32 big-endian, 32 bits bas du MAC ESP32
+ * byte  4-5  : température — int16 big-endian, °C × 100  (ex: 21.5°C → 2150)
+ * byte  6-7  : pression    — uint16 big-endian, hPa entier (ex: 1013 hPa → 1013)
+ * byte  8-9  : pm2.5       — uint16 big-endian, µg/m³ × 10 (ex: 12.5 → 125)
+ * byte 10-11 : micro       — uint16 big-endian, RMS [0.0-1.0] × 10000 (ex: 0.0421 → 421)
  *
- * Total : 10 bytes — largement sous la limite de 51 bytes LoRa SF9/125kHz
+ * Total : 12 bytes — largement sous la limite de 51 bytes LoRa SF9/125kHz
  */
 
-#define PAYLOAD_LEN 10
+#define PAYLOAD_LEN 12
 
 // Structure interne côté C++ — les floats sont plus pratiques pour le calcul
 struct SensorPayload {
@@ -24,6 +25,7 @@ struct SensorPayload {
     float    temperature;  // °C
     float    pressure;     // hPa
     float    pm25;         // µg/m³
+    float    mic_level;    // RMS, amplitude normalisée [0.0-1.0]
 };
 
 // Convertit la structure en tableau d'octets pour la transmission LoRa
@@ -34,17 +36,21 @@ inline void encodePayload(uint8_t *buf, const SensorPayload &p) {
     uint16_t pres_raw = (uint16_t)(p.pressure);
     // PM2.5 × 10 pour garder une décimale sans perdre de précision
     uint16_t pm25_raw = (uint16_t)(p.pm25 * 10.0f);
+    // Micro × 10000 pour garder 4 décimales sur une amplitude [0.0-1.0]
+    uint16_t mic_raw  = (uint16_t)(p.mic_level * 10000.0f);
 
-    buf[0] = (p.device_id >> 24) & 0xFF;
-    buf[1] = (p.device_id >> 16) & 0xFF;
-    buf[2] = (p.device_id >>  8) & 0xFF;
-    buf[3] =  p.device_id        & 0xFF;
-    buf[4] = (temp_raw    >>  8) & 0xFF;
-    buf[5] =  temp_raw           & 0xFF;
-    buf[6] = (pres_raw    >>  8) & 0xFF;
-    buf[7] =  pres_raw           & 0xFF;
-    buf[8] = (pm25_raw    >>  8) & 0xFF;
-    buf[9] =  pm25_raw           & 0xFF;
+    buf[0]  = (p.device_id >> 24) & 0xFF;
+    buf[1]  = (p.device_id >> 16) & 0xFF;
+    buf[2]  = (p.device_id >>  8) & 0xFF;
+    buf[3]  =  p.device_id        & 0xFF;
+    buf[4]  = (temp_raw    >>  8) & 0xFF;
+    buf[5]  =  temp_raw           & 0xFF;
+    buf[6]  = (pres_raw    >>  8) & 0xFF;
+    buf[7]  =  pres_raw           & 0xFF;
+    buf[8]  = (pm25_raw    >>  8) & 0xFF;
+    buf[9]  =  pm25_raw           & 0xFF;
+    buf[10] = (mic_raw     >>  8) & 0xFF;
+    buf[11] =  mic_raw            & 0xFF;
 }
 
 // Reconstruit la structure à partir des octets reçus par LoRa
@@ -56,4 +62,5 @@ inline void decodePayload(const uint8_t *buf, SensorPayload &p) {
     p.temperature = temp / 100.0f;
     p.pressure    = (float)(((uint16_t)buf[6] << 8) | buf[7]);
     p.pm25        = (float)(((uint16_t)buf[8] << 8) | buf[9]) / 10.0f;
+    p.mic_level   = (float)(((uint16_t)buf[10] << 8) | buf[11]) / 10000.0f;
 }
