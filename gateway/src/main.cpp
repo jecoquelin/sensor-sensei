@@ -11,20 +11,33 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <cstring>
 #include "config.h"
 #include "display/display.h"
 #include "lora/receiver.h"
 #include "gatekeeper.h"
 #include "http/sensor_community.h"
+#include "settings/settings.h"
+#include "portal/portal.h"
 
 // Tente de (re)connecter le WiFi. Appelé au setup et avant chaque envoi HTTP
 // car la connexion peut tomber entre deux paquets LoRa.
 static void wifiConnect() {
+    const GatewaySettings &cfg = settingsGet();
+    const char *ssid = cfg.wifiSsid[0] != '\0' ? cfg.wifiSsid : WIFI_SSID;
+    const char *password = cfg.wifiPassword[0] != '\0' ? cfg.wifiPassword : WIFI_PASSWORD;
+
+    if (strlen(ssid) == 0 || strlen(password) == 0) {
+        Serial.println("[WiFi] No station credentials configured");
+        portalSetStationStatus(false, "-", WiFi.localIP(), "No station credentials configured");
+        return;
+    }
+
     if (WiFi.status() == WL_CONNECTED) return;
 
-    Serial.printf("[WiFi] Connexion à %s...\n", WIFI_SSID);
+    Serial.printf("[WiFi] Connexion à %s...\n", ssid);
     displayStatus("Connexion WiFi...");
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    WiFi.begin(ssid, password);
 
     // Timeout 15 s — si le WiFi est indisponible, le gateway continue d'écouter
     // le LoRa et retente à la prochaine réception de paquet.
@@ -36,12 +49,34 @@ static void wifiConnect() {
         Serial.printf("[WiFi] Connecté — IP: %s\n", WiFi.localIP().toString().c_str());
     else
         Serial.println("[WiFi] Timeout — données non envoyées ce cycle");
+
+    portalSetStationStatus(
+        WiFi.status() == WL_CONNECTED,
+        ssid,
+        WiFi.localIP(),
+        WiFi.status() == WL_CONNECTED ? "Connected" : "Timeout"
+    );
+}
+
+static void restartGateway(const char *reason) {
+    Serial.printf("[Gateway] %s, restart\n", reason);
+    displayError(reason);
+    delay(2000);
+    ESP.restart();
 }
 
 void setup() {
     Serial.begin(115200);
 
+    settingsLoad();
+    gatekeeperInit();
+    const GatewaySettings &cfg = settingsGet();
+    gatekeeperSetWhitelist(cfg.whitelist, cfg.whitelistCount);
+
     displayInit();
+    if (!portalInit()) {
+        restartGateway("AP init failed");
+    }
     wifiConnect();
 
     // LoRa doit être initialisé avant d'entrer dans loop()
@@ -49,10 +84,13 @@ void setup() {
         displayError("LoRa init failed");
         while (1);  // bloquant — redémarrer la carte si ce cas arrive
     }
+    portalSetLoraStatus(true, "Listening 868 MHz");
     displayStatus("Ecoute 868 MHz...");
 }
 
 void loop() {
+    portalLoop();
+
     LoRaFrame frame;
 
     // loraReceive() est non-bloquant — retourne false si aucun paquet n'est disponible
@@ -76,6 +114,7 @@ void loop() {
     Serial.println("─────────────────────────────");
 
     displayPacket(p.device_id, p.temperature, p.pressure, p.pm25, frame.rssi, frame.snr);
+    portalSetLastPacket(p, frame.rssi, frame.snr);
 
     // Reconnexion WiFi si nécessaire avant l'envoi HTTP
     wifiConnect();
