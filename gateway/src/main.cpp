@@ -1,122 +1,86 @@
-#include <Arduino.h>
-#include <SPI.h>
-#include <RadioLib.h>
-#include "display/display.h"
-
 /*
-Branchement SX1262 (intégré Heltec V3 - interne)
-┌────────┬────────┐
-│ Signal │  GPIO  │
-├────────┼────────┤
-│ SCK    │ 9      │
-│ MISO   │ 11     │
-│ MOSI   │ 10     │
-│ NSS    │ 8      │
-│ RESET  │ 12     │
-│ DIO1   │ 14     │
-│ BUSY   │ 13     │
-└────────┴────────┘
+ * SensorSensei — Gateway (Heltec WiFi LoRa 32 V3)
+ *
+ * Le gateway écoute en permanence sur 868 MHz. À chaque paquet reçu :
+ *   1. Vérifie que l'expéditeur est autorisé (gatekeeper)
+ *   2. Affiche les données sur l'écran OLED
+ *   3. Envoie les données à l'API sensor.community via HTTPS
+ *
+ * Contrairement au node, le gateway est alimenté sur USB et tourne en continu.
+ */
 
-RSSI - Plus c'est proche de 0, meilleur c'est
-SNR - rapport signal/bruit, en dB
-┌────────────┬────────────┬──────────┬────────────┐
-│ Indicateur │    Bon     │  Limite  │    Mort    │
-├────────────┼────────────┼──────────┼────────────┤
-│ RSSI       │ > -100 dBm │ -110 dBm │ < -120 dBm │
-├────────────┼────────────┼──────────┼────────────┤
-│ SNR        │ > 0 dB     │ -10 dB   │ < -20 dB   │
-└────────────┴────────────┴──────────┴────────────┘
-*/
+#include <Arduino.h>
+#include <WiFi.h>
+#include "config.h"
+#include "display/display.h"
+#include "lora/receiver.h"
+#include "gatekeeper.h"
+#include "http/sensor_community.h"
 
-// ─── SX1262 pins (Heltec WiFi LoRa 32 V3) ────────────────────────────────────
-#define LORA_NSS    8
-#define LORA_DIO1   14
-#define LORA_RST    12
-#define LORA_BUSY   13
+// Tente de (re)connecter le WiFi. Appelé au setup et avant chaque envoi HTTP
+// car la connexion peut tomber entre deux paquets LoRa.
+static void wifiConnect() {
+    if (WiFi.status() == WL_CONNECTED) return;
 
-// ─── LoRa config — doit correspondre au node ─────────────────────────────────
-#define LORA_FREQ       868.0
-#define LORA_BW         125.0
-#define LORA_SF         9
-#define LORA_CR         7
-#define LORA_SYNC_WORD  0x12
+    Serial.printf("[WiFi] Connexion à %s...\n", WIFI_SSID);
+    displayStatus("Connexion WiFi...");
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
-// ─── Payload layout (identique au node) ──────────────────────────────────────
-// byte 0-1 : device id   (uint16, big-endian)
-// byte 2-3 : température (int16, °C × 100)
-// byte 4-5 : pression    (uint16, hPa)
-#define PAYLOAD_LEN 6
+    // Timeout 15 s — si le WiFi est indisponible, le gateway continue d'écouter
+    // le LoRa et retente à la prochaine réception de paquet.
+    unsigned long start = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - start < 15000)
+        delay(500);
 
-SX1262 radio = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY);
-
-volatile bool rxDone = false;
-
-void IRAM_ATTR onReceive() {
-    rxDone = true;
-}
-
-void decodeAndDisplay(uint8_t *buf, uint8_t len) {
-    if (len < PAYLOAD_LEN) {
-        Serial.printf("[RX] Payload trop court: %d bytes\n", len);
-        displayError("Payload trop court");
-        return;
-    }
-
-    uint16_t device_id = ((uint16_t)buf[0] << 8) | buf[1];
-    int16_t  temp_raw  = ((int16_t)buf[2]  << 8) | buf[3];
-    uint16_t pres_raw  = ((uint16_t)buf[4] << 8) | buf[5];
-
-    float temp     = temp_raw / 100.0f;
-    float pressure = (float)pres_raw;
-    float rssi     = radio.getRSSI();
-    float snr      = radio.getSNR();
-
-    Serial.println("─────────────────────────────");
-    Serial.printf("Device ID  : 0x%04X\n", device_id);
-    Serial.printf("Température: %.2f °C\n", temp);
-    Serial.printf("Pression   : %.0f hPa\n", pressure);
-    Serial.printf("RSSI       : %.1f dBm\n", rssi);
-    Serial.printf("SNR        : %.1f dB\n",  snr);
-    Serial.println("─────────────────────────────");
-
-    displayPacket(device_id, temp, pressure, rssi, snr);
+    if (WiFi.status() == WL_CONNECTED)
+        Serial.printf("[WiFi] Connecté — IP: %s\n", WiFi.localIP().toString().c_str());
+    else
+        Serial.println("[WiFi] Timeout — données non envoyées ce cycle");
 }
 
 void setup() {
     Serial.begin(115200);
 
     displayInit();
+    wifiConnect();
 
-    SPI.begin(9, 11, 10, LORA_NSS);
-    int state = radio.begin(LORA_FREQ, LORA_BW, LORA_SF, LORA_CR,
-                            LORA_SYNC_WORD);
-    if (state != RADIOLIB_ERR_NONE) {
-        Serial.printf("[LoRa] Init failed: %d\n", state);
+    // LoRa doit être initialisé avant d'entrer dans loop()
+    if (!loraInit()) {
         displayError("LoRa init failed");
-        while (1);
+        while (1);  // bloquant — redémarrer la carte si ce cas arrive
     }
-    Serial.println("[LoRa] Gateway ready — écoute sur 868 MHz");
     displayStatus("Ecoute 868 MHz...");
-
-    radio.setDio1Action(onReceive);
-    radio.startReceive();
 }
 
 void loop() {
-    if (!rxDone) return;
-    rxDone = false;
+    LoRaFrame frame;
 
-    uint8_t buf[PAYLOAD_LEN];
-    int state = radio.readData(buf, PAYLOAD_LEN);
+    // loraReceive() est non-bloquant — retourne false si aucun paquet n'est disponible
+    if (!loraReceive(frame)) return;
 
-    if (state == RADIOLIB_ERR_NONE) {
-        decodeAndDisplay(buf, PAYLOAD_LEN);
-    } else {
-        Serial.printf("[LoRa] RX error: %d\n", state);
-        char err[20];
-        snprintf(err, sizeof(err), "RX error: %d", state);
-        displayError(err);
+    const SensorPayload &p = frame.payload;
+
+    // Valide l'expéditeur et les plages de valeurs capteur
+    if (!gatekeeperValidate(p)) {
+        displayError("Paquet rejeté");
+        return;
     }
 
-    radio.startReceive();
+    Serial.println("─────────────────────────────");
+    Serial.printf("Device ID  : 0x%08X\n", p.device_id);
+    Serial.printf("Température: %.2f °C\n",  p.temperature);
+    Serial.printf("Pression   : %.0f hPa\n", p.pressure);
+    Serial.printf("Poussière  : %.1f µg/m³\n", p.pm25);
+    Serial.printf("RSSI       : %.1f dBm\n", frame.rssi);
+    Serial.printf("SNR        : %.1f dB\n",  frame.snr);
+    Serial.println("─────────────────────────────");
+
+    displayPacket(p.device_id, p.temperature, p.pressure, p.pm25, frame.rssi, frame.snr);
+
+    // Reconnexion WiFi si nécessaire avant l'envoi HTTP
+    wifiConnect();
+    if (WiFi.status() == WL_CONNECTED) {
+        if (!scSend(p))
+            displayError("SC: envoi échoué");
+    }
 }

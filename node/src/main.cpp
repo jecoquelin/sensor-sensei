@@ -1,8 +1,22 @@
+/*
+ * SensorSensei — Node (LilyGO T-Beam V1.2)
+ *
+ * Architecture deep sleep :
+ *   Toute la logique est dans setup(). Le deep sleep redémarre l'ESP32
+ *   depuis le début à chaque réveil, donc loop() n'est jamais atteint.
+ *   Les variables en RTC_DATA_ATTR survivent au deep sleep et évitent
+ *   de relire l'eFuse ou de re-calibrer à chaque cycle.
+ */
+
 #include <Wire.h>
 #include <SPI.h>
-// #include <Adafruit_BMP280.h>
+#include <math.h>
+#include <Adafruit_BMP280.h>
 #include <RadioLib.h>
-#include "sensors/sph0645.h"
+#include <XPowersLib.h>
+#include "sensors/dust.h"
+#include "sensors/microphone.h"
+#include "../../shared/payload.h"
 
 /*
 Branchement BMP280 (HW-611) — désactivé
@@ -17,12 +31,26 @@ Branchement BMP280 (HW-611) — désactivé
 ├────────┼────────────────────┤
 │ SCL    │ GPIO 22            │
 ├────────┼────────────────────┤
-│ CSB    │ 3.3V ← critique    │
+│ CSB    │ 3.3V ← force le mode I2C, critique │
 ├────────┼────────────────────┤
-│ SDD    │ GND (adresse 0x76) │
+│ SDD    │ GND  ← fixe l'adresse I2C à 0x76  │
 └────────┴────────────────────┘
 
-Branchement SX1276 (intégré T-Beam)
+Branchement Waveshare Dust Sensor (GP2Y1010AU0F)
+┌──────────────┬──────────────────────────────────────────────────┐
+│ Dust Sensor  │                     T-Beam                       │
+├──────────────┼──────────────────────────────────────────────────┤
+│ VCC          │ 5V  ← alimentation directe USB/batterie          │
+├──────────────┼──────────────────────────────────────────────────┤
+│ GND          │ GND                                              │
+├──────────────┼──────────────────────────────────────────────────┤
+│ LED          │ GPIO 2  ← pilote la LED infrarouge               │
+├──────────────┼──────────────────────────────────────────────────┤
+│ VOUT         │ GPIO 36 (ADC0/SVP) via pont diviseur 10k/20k     │
+│              │ ← le diviseur ramène 5V → 3.3V pour l'ADC ESP32  │
+└──────────────┴──────────────────────────────────────────────────┘
+
+Branchement SX1276 (intégré T-Beam, SPI interne)
 ┌────────┬────────┐
 │ Signal │  GPIO  │
 ├────────┼────────┤
@@ -53,93 +81,142 @@ Branchement SPH0645 (micro I2S)
 └────────────┴────────────────────┘
 */
 
-#define LORA_NSS        18
-#define LORA_RST        23
-#define LORA_DIO0       26
-#define LORA_DIO1       33
+// Durée de veille entre deux mesures. sensor.community accepte des mises à jour
+// toutes les 145 s minimum. 5 min donne un bon compromis autonomie / fraîcheur.
+#define SLEEP_INTERVAL_US  (5ULL * 60 * 1000000)
 
-#define LORA_FREQ       868.0
-#define LORA_BW         125.0
-#define LORA_SF         9
-#define LORA_CR         7
-#define LORA_SYNC_WORD  0x12
-#define LORA_POWER      14
+// ─── Pins SX1276 (T-Beam V1.2) ───────────────────────────────────────────────
+#define LORA_NSS    18
+#define LORA_RST    23
+#define LORA_DIO0   26
+#define LORA_DIO1   33
 
-#define DEVICE_ID       0x0001
+// ─── Paramètres LoRa 868 MHz ──────────────────────────────────────────────────
+#define LORA_FREQ       868.0   // MHz — bande EU
+#define LORA_BW         125.0   // kHz
+#define LORA_SF         9       // Spreading Factor — compromis portée/débit
+#define LORA_CR         7       // Code Rate 4/7
+#define LORA_SYNC_WORD  0x12    // 0x12 = réseau LoRa privé (≠ 0x34 TTN public)
+#define LORA_POWER      14      // dBm — max légal EU sans licence
 
-// ─── Payload layout ──────────────────────────────────────────────────────────
-// byte 0-1 : device id  (uint16, big-endian)
-// byte 2-3 : mic RMS    (uint16, valeur × 10000)
-// total: 4 bytes
+// Variables en RTC RAM : survivent au deep sleep, perdues seulement au power cycle.
+// Évite de relire l'eFuse MAC (opération lente) à chaque réveil.
+RTC_DATA_ATTR static uint32_t DEVICE_ID  = 0;
+RTC_DATA_ATTR static bool     first_boot = true;
 
-SX1276 radio = new Module(LORA_NSS, LORA_DIO0, LORA_RST, LORA_DIO1);
-// Adafruit_BMP280 bmp;
+// ─── Objets matériels ─────────────────────────────────────────────────────────
+SX1276           radio = new Module(LORA_NSS, LORA_DIO0, LORA_RST, LORA_DIO1);
+Adafruit_BMP280  bmp;
+DustSensor       dust(2, 36);
+MicrophoneSensor mic;
+XPowersAXP2101   PMU;
+static bool      pmuOk = false;  // faux si PMIC absent ou non reconnu
+
+// ─── Gestion PMIC AXP2101 ─────────────────────────────────────────────────────
+static void pmicInit() {
+    // PMU.init() initialise Wire en interne — pas besoin de Wire.begin() séparé
+    pmuOk = PMU.init(Wire, 21, 22, AXP2101_SLAVE_ADDRESS);
+    if (!pmuOk) {
+        Serial.println("[PMIC]   Init failed");
+        return;
+    }
+    Serial.println("[PMIC]   AXP2101 OK");
+
+    // Mapping T-Beam V1.2 confirmé par schéma LilyGO :
+    // ALDO3 alimente le SX1276, ALDO4 alimente le module GPS (inutilisé ici).
+    // Couper ALDO4 économise ~30 mA en permanence.
+    PMU.enableALDO3();   // LoRa SX1276 ON
+    PMU.disableALDO4();  // GPS OFF
+}
+
+// ─── Mise en veille profonde ───────────────────────────────────────────────────
+// Cette fonction ne retourne jamais : l'ESP32 redémarre depuis setup() au réveil.
+static void enterDeepSleep() {
+    // Mettre le radio en veille logicielle avant de couper son alimentation
+    // évite des états indéterminés au prochain réveil.
+    radio.sleep();
+
+    if (pmuOk)
+        PMU.disableALDO3();  // coupe l'alimentation du SX1276
+
+    digitalWrite(2, LOW);  // LED infrarouge du capteur poussière éteinte
+    Serial.printf("[NODE]   Deep sleep %llu s\n", SLEEP_INTERVAL_US / 1000000ULL);
+    Serial.flush();  // vide le buffer UART avant la coupure
+    esp_sleep_enable_timer_wakeup(SLEEP_INTERVAL_US);
+    esp_deep_sleep_start();
+}
 
 void setup() {
     Serial.begin(115200);
 
-    // Wire.begin(21, 22);
-    // if (!bmp.begin(0x76)) {
-    //     Serial.println("[BMP280] Not found !");
-    //     while (1);
-    // }
-    // Serial.println("[BMP280] OK");
-
-    if (!micInit()) {
-        Serial.println("[MIC] Init failed !");
-        while (1);
+    // Au premier démarrage, on lit le MAC depuis l'eFuse et on le stocke en RTC RAM.
+    // Les réveils suivants récupèrent directement la valeur sans accès eFuse.
+    if (first_boot) {
+        DEVICE_ID  = (uint32_t)(ESP.getEfuseMac() & 0xFFFFFFFF);
+        first_boot = false;
+        Serial.printf("[NODE]   First boot — Device ID: 0x%08X (%u)\n",
+                      DEVICE_ID, DEVICE_ID);
+    } else {
+        Serial.printf("[NODE]   Wake — Device ID: 0x%08X\n", DEVICE_ID);
     }
 
+    // Initialise le PMIC et les rails d'alimentation
+    pmicInit();
+
+    // BMP280 — Wire est déjà initialisé par pmicInit()
+    if (!bmp.begin(0x76)) {
+        Serial.println("[BMP280] Not found !");
+        enterDeepSleep();  // dort quand même pour reprendre au prochain cycle
+    }
+
+    // SX1276 — ALDO3 est allumé, on peut initialiser RadioLib
     SPI.begin(5, 19, 27, LORA_NSS);
     int state = radio.begin(LORA_FREQ, LORA_BW, LORA_SF, LORA_CR,
                             LORA_SYNC_WORD, LORA_POWER);
     if (state != RADIOLIB_ERR_NONE) {
-        Serial.printf("[LoRa] Init failed: %d\n", state);
-        while (1);
+        Serial.printf("[LoRa]   Init failed: %d\n", state);
+        enterDeepSleep();
     }
-    Serial.println("[LoRa] OK");
-}
+    Serial.println("[LoRa]   OK");
 
-void buildPayload(uint8_t *buf, float rms) {
-    uint16_t mic_raw = (uint16_t)(rms * 10000.0f);
+    // Capteur poussière — begin() inclut le warmup de la LED IR (~1.5 s)
+    dust.begin();
+    Serial.println("[DUST]   OK");
 
-    buf[0] = (DEVICE_ID >> 8) & 0xFF;
-    buf[1] =  DEVICE_ID       & 0xFF;
-    buf[2] = (mic_raw   >> 8) & 0xFF;
-    buf[3] =  mic_raw         & 0xFF;
+    // Micro I2S — non bloquant pour le reste du cycle : en cas d'échec on
+    // continue quand même avec un niveau sonore à 0 plutôt que de perdre
+    // toute la remontée BMP280/dust de ce cycle.
+    bool micOk = mic.begin();
+    if (!micOk)
+        Serial.println("[MIC]    Init failed — mic_level forcé à 0");
+
+    // ─── Lecture des capteurs ─────────────────────────────────────────────────
+    float temp     = bmp.readTemperature();
+    float pressure = bmp.readPressure() / 100.0f;  // Pa → hPa pour la payload
+    float pm25     = dust.read();
+    float micLevel = micOk ? mic.read() : 0.0f;
+
+    Serial.printf("[BMP280] Temp: %.2f C | Pressure: %.2f hPa\n", temp, pressure);
+    Serial.printf("[DUST]   PM2.5: %.1f ug/m3 | Voltage: %.0f mV\n",
+                  pm25, dust.getLastVoltage());
+    Serial.printf("[MIC]    RMS: %.4f | %.1f dBFS\n",
+                  micLevel, 20.0f * log10f(micLevel > 0.0f ? micLevel : 1e-9f));
+
+    // ─── Encodage et transmission ─────────────────────────────────────────────
+    SensorPayload p = { DEVICE_ID, temp, pressure, pm25, micLevel };
+    uint8_t payload[PAYLOAD_LEN];
+    encodePayload(payload, p);
+
+    state = radio.transmit(payload, sizeof(payload));
+    if (state == RADIOLIB_ERR_NONE)
+        Serial.printf("[LoRa]   Sent %d bytes OK\n", sizeof(payload));
+    else
+        Serial.printf("[LoRa]   TX error: %d\n", state);
+
+    // ─── Retour en veille profonde ────────────────────────────────────────────
+    enterDeepSleep();
 }
 
 void loop() {
-    static uint32_t last_send = 0;
-    static float    rms_sum   = 0.0f;
-    static uint32_t rms_count = 0;
-
-    // Lecture continue du micro
-    float rms = micReadRMS();
-    if (rms > 0.001f) {
-        rms_sum += rms;
-        rms_count++;
-    }
-
-    if (millis() - last_send >= 10000) {
-        float rms_avg = (rms_count > 0) ? rms_sum / rms_count : 0.0f;
-
-        Serial.printf("[MIC] RMS avg: %.4f | %.1f dBFS (sur %d lectures)\n",
-    rms_avg, 20.0f * log10f(rms_avg > 0.0f ? rms_avg : 1e-9f), rms_count);
-
-        uint8_t payload[4];
-        buildPayload(payload, rms_avg);
-
-        int state = radio.transmit(payload, sizeof(payload));
-        if (state == RADIOLIB_ERR_NONE) {
-            Serial.printf("[LoRa] Sent %d bytes OK\n", sizeof(payload));
-        } else {
-            Serial.printf("[LoRa] TX error: %d\n", state);
-        }
-
-        // Reset pour la prochaine fenêtre
-        rms_sum   = 0.0f;
-        rms_count = 0;
-        last_send = millis();
-    }
+    // Jamais atteint — setup() se termine toujours par enterDeepSleep()
 }

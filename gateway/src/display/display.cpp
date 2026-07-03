@@ -6,6 +6,8 @@
 static Adafruit_SSD1306 _oled(SCREEN_W, SCREEN_H, &Wire, OLED_RST);
 
 void displayInit() {
+    // Le SSD1306 du Heltec V3 nécessite une impulsion RST manuelle au démarrage.
+    // Sans ce reset, l'écran reste noir même si I2C répond.
     pinMode(OLED_RST, OUTPUT);
     digitalWrite(OLED_RST, LOW);
     delay(10);
@@ -34,32 +36,31 @@ void displayStatus(const char *status) {
     _oled.display();
 }
 
-void displayPacket(uint16_t device_id, float temp, float pressure, float rssi, float snr) {
+void displayPacket(uint32_t device_id, float temp, float pressure, float dust, float rssi, float snr) {
     _oled.clearDisplay();
     _oled.setTextSize(1);
     _oled.setCursor(0, 0);
 
-    // Line 0: title
+    // L'écran SSD1306 128×64 avec textSize(1) affiche 8 lignes de 21 caractères max
+    char buf[22];
+
     _oled.println("=== LoRa Gateway ===");
 
-    // Line 1: device id
-    char buf[22];
-    snprintf(buf, sizeof(buf), "Dev : 0x%04X", device_id);
+    snprintf(buf, sizeof(buf), "Dev:%08X", device_id);
     _oled.println(buf);
 
-    // Line 2: temperature
     snprintf(buf, sizeof(buf), "Temp: %.1f C", temp);
     _oled.println(buf);
 
-    // Line 3: pressure
     snprintf(buf, sizeof(buf), "Pres: %.0f hPa", pressure);
     _oled.println(buf);
 
-    // Line 4: RSSI
+    snprintf(buf, sizeof(buf), "Dust: %.1f µ/m³", dust);
+    _oled.println(buf);
+
     snprintf(buf, sizeof(buf), "RSSI: %.1f dBm", rssi);
     _oled.println(buf);
 
-    // Line 5: SNR
     snprintf(buf, sizeof(buf), "SNR : %.1f dB", snr);
     _oled.println(buf);
 
