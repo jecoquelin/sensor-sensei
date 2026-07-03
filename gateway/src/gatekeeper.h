@@ -17,5 +17,9 @@ static const size_t AUTHORIZED_DEVICES_COUNT =
 #define PRES_MIN    300.0f
 #define PRES_MAX   1100.0f
 
+// ─── Plage valide micro (RMS, amplitude normalisée) ──────────────────────────
+#define MIC_LEVEL_MIN  0.0f
+#define MIC_LEVEL_MAX  1.0f
+
 bool gatekeeperValidate(const SensorPayload &p);
 

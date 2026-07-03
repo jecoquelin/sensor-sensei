@@ -14,5 +14,5 @@
 
 void displayInit();
 void displayStatus(const char *status);
-void displayPacket(uint32_t device_id, float temp, float pressure, float dust, float rssi, float snr);
+void displayPacket(uint32_t device_id, float temp, float pressure, float dust, float mic, float rssi, float snr);
 void displayError(const char *msg);
